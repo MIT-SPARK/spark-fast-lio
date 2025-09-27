@@ -46,15 +46,26 @@ find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
-find_package(pcl_conversions REQUIRED)
-find_package(PCL REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
 
 find_package(Eigen3 REQUIRED)
+
 set(PCL_FIND_QUIETLY ON)
+set(CLEAR_WARNING_SUPPRESSION OFF)
+if(NOT DEFINED CMAKE_SUPPRESS_DEVELOPER_WARNINGS)
+  set(CLEAR_WARNING_SUPPRESSION ON)
+  set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS 1 CACHE INTERNAL "No dev warnings")
+endif()
+
+find_package(PCL REQUIRED)
+find_package(pcl_conversions REQUIRED)
+
+if (CLEAR_WARNING_SUPPRESSION)
+  unset(CMAKE_SUPPRESS_DEVELOPER_WARNINGS)
+endif()
 
 include_directories(
   include

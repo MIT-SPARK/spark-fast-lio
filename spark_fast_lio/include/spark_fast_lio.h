@@ -168,6 +168,7 @@ class SPARKFastLIO2 : public rclcpp::Node {
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
+  rclcpp::Clock::SharedPtr clock_;
   rclcpp::TimerBase::SharedPtr main_loop_timer_;
 
   /*** Time Log Variables ***/
@@ -210,6 +211,7 @@ class SPARKFastLIO2 : public rclcpp::Node {
   bool scan_base_pub_en_  = false;
 
   bool verbose_ = false;
+  bool pcl_verbose_ = true;
 
   bool enable_gravity_alignment_ = false;
   bool is_gravity_aligned_       = false;
@@ -232,9 +234,9 @@ class SPARKFastLIO2 : public rclcpp::Node {
 
   double res_mean_last_          = 0.05;
   double total_residual_         = 0.0;
-  double last_lidar_timestamp_   = 0.0;
-  double last_imu_timestamp_     = -1.0;
-  double timediff_lidar_wrt_imu_ = 0.0;
+  rclcpp::Time last_lidar_timestamp_;
+  rclcpp::Time last_imu_timestamp_;
+  int64_t timediff_lidar_wrt_imu_ = 0;
 
   double gyr_cov_   = 0.1;
   double acc_cov_   = 0.1;
@@ -284,6 +286,7 @@ class SPARKFastLIO2 : public rclcpp::Node {
   std::vector<double> g_base_vec_{0.0, 0.0, -1.0};
   std::vector<double> extrinT_{0.0, 0.0, 0.0};
   std::vector<double> extrinR_{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+  double extrinsics_timeout_s_ = 10.0;
 
   std::deque<double> time_buffer_;
   std::deque<PointCloudXYZI::Ptr> lidar_buffer_;

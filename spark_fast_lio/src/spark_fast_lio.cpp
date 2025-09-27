@@ -10,7 +10,10 @@
 namespace spark_fast_lio {
 
 SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
-    : Node("spark_fast_lio_node", options) {
+    : Node("spark_fast_lio_node", options),
+      clock_(get_clock()),
+      last_lidar_timestamp_(now()),
+      last_imu_timestamp_(now()) {
   preprocessor_  = std::make_shared<Preprocess>();
   imu_processor_ = std::make_shared<ImuProcess>();
 
@@ -61,11 +64,17 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   num_gravity_measurements_thr_ =
       declare_parameter<int>("gravity_alignment.num_gravity_measurements_thr", 20);
 
-  verbose_           = declare_parameter<bool>("verbose", false);
-  runtime_pos_log_   = declare_parameter<bool>("runtime_pos_log_enable", false);
-  extrinsic_est_en_  = declare_parameter<bool>("mapping.extrinsic_est_en", false);
-  pcd_save_en_       = declare_parameter<bool>("pcd_save.pcd_save_en", false);
-  pcd_save_interval_ = declare_parameter<int>("pcd_save.interval", -1);
+  verbose_     = declare_parameter<bool>("verbose", false);
+  pcl_verbose_ = declare_parameter<bool>("pcl_verbose", true);
+  if (!pcl_verbose_) {
+    pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
+  }
+
+  runtime_pos_log_      = declare_parameter<bool>("runtime_pos_log_enable", false);
+  extrinsic_est_en_     = declare_parameter<bool>("mapping.extrinsic_est_en", false);
+  extrinsics_timeout_s_ = declare_parameter<double>("extrinsics_timeout_s", 10.0);
+  pcd_save_en_          = declare_parameter<bool>("pcd_save.pcd_save_en", false);
+  pcd_save_interval_    = declare_parameter<int>("pcd_save.interval", -1);
 
   point_filter_num_ = declare_parameter<int>("point_filter_num", 4);
 
@@ -221,7 +230,7 @@ bool SPARKFastLIO2::lookupBaseExtrinsics(V3D &lidar_T_wrt_base, M3D &lidar_R_wrt
   bool has_transform     = false;
   std::string err_str;
   auto start_time          = this->now();
-  rclcpp::Duration timeout = rclcpp::Duration::from_seconds(10.0);
+  rclcpp::Duration timeout = rclcpp::Duration::from_seconds(extrinsics_timeout_s_);
   rclcpp::Rate rate(10.0);  // Just 10 Hz works
 
   while (rclcpp::ok()) {
@@ -232,13 +241,22 @@ bool SPARKFastLIO2::lookupBaseExtrinsics(V3D &lidar_T_wrt_base, M3D &lidar_R_wrt
       break;
     }
 
-    if ((this->now() - start_time) > timeout) {
+    const auto time_since_start = now() - start_time;
+    if (extrinsics_timeout_s_ > 0.0 && time_since_start > timeout) {
       RCLCPP_ERROR_STREAM(this->get_logger(),
                           "Timeout after "
                               << timeout.seconds() << " seconds waiting for transform from '"
                               << lidar_frame_ << "' to '" << base_frame_ << "': " << err_str);
       break;
     }
+
+    RCLCPP_WARN_STREAM_SKIPFIRST_THROTTLE(get_logger(),
+                                          *clock_,
+                                          5000,
+                                          "Waiting for transform from '" << lidar_frame_ << "' to '"
+                                                                         << base_frame_
+                                                                         << "': " << err_str);
+
     rate.sleep();
   }
 
@@ -351,7 +369,7 @@ void SPARKFastLIO2::collectRemovedPoints() {
 void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &msg) {
   std::lock_guard<std::mutex> lk(buffer_mutex_);
   scan_count_++;
-  double msg_time = rclcpp::Time(msg.header.stamp).seconds();
+  rclcpp::Time msg_time = msg.header.stamp;
 
   if (msg_time < last_lidar_timestamp_) {
     RCLCPP_ERROR(get_logger(), "Lidar loopback detected, clearing buffers");
@@ -363,7 +381,7 @@ void SPARKFastLIO2::standardLiDARCallback(const sensor_msgs::msg::PointCloud2 &m
   preprocessor_->process(msg, ptr);
 
   lidar_buffer_.push_back(ptr);
-  time_buffer_.push_back(msg_time);
+  time_buffer_.push_back(msg_time.seconds());
 
   sig_buffer_.notify_all();
 }
@@ -375,7 +393,7 @@ void SPARKFastLIO2::livoxLiDARCallback(
 
   std::lock_guard<std::mutex> lk(buffer_mutex_);
   scan_count_++;
-  double msg_time = rclcpp::Time(msg->header.stamp).seconds();
+  rclcpp::Time msg_time = msg.header.stamp;
 
   if (msg_time < last_lidar_timestamp_) {
     RCLCPP_ERROR(get_logger(), "Livox loopback, clearing buffers");
@@ -383,28 +401,28 @@ void SPARKFastLIO2::livoxLiDARCallback(
   }
   last_lidar_timestamp_ = msg_time;
 
-  if (!time_sync_en_ && abs(last_imu_timestamp_ - last_lidar_timestamp_) > 10.0 &&
-      !imu_buffer_.empty() && !lidar_buffer_.empty()) {
-    RCLCPP_WARN_STREAM(
-        this->get_logger(),
-        "IMU and LiDAR not Synced, IMU time: " << last_imu_timestamp_
-                                               << ", lidar header time: " << last_lidar_timestamp_);
+  const auto diff_s = std::abs((last_imu_timestamp_ - last_lidar_timestamp_).seconds());
+  if (!time_sync_en_ && diff_s > 10.0 && !imu_buffer_.empty() && !lidar_buffer_.empty()) {
+    RCLCPP_WARN_STREAM(this->get_logger(),
+                       "IMU and LiDAR not Synced, IMU time: "
+                           << last_imu_timestamp_.nanoseconds()
+                           << ", lidar header time: " << last_lidar_timestamp_.nanoseconds());
   }
 
-  if (time_sync_en_ && !timediff_set_flg && abs(last_lidar_timestamp_ - last_imu_timestamp_) > 1 &&
-      !imu_buffer.empty()) {
+  if (time_sync_en_ && !timediff_set_flg && diff_s > 1.0 && !imu_buffer.empty()) {
     timediff_set_flg        = true;
-    timediff_lidar_wrt_imu_ = last_lidar_timestamp_ + 0.1 - last_imu_timestamp_;
-    RCLCPP_INFO(this->get_logger(),
-                "Self sync IMU and LiDAR, time diff is %.10lf",
-                timediff_lidar_wrt_imu_);
+    timediff_lidar_wrt_imu_ = last_lidar_timestamp_.nanseconds() + static_cast<int64_t>(1.0e8) -
+                              last_imu_timestamp_.nanoseconds();
+    RCLCPP_INFO_STREAM(
+        this->get_logger(),
+        "Self sync IMU and LiDAR, time diff is " << timediff_lidar_wrt_imu_ << "[ns]");
   }
 
   PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
   preprocessor_->process(msg, ptr);
 
   lidar_buffer_.push_back(ptr);
-  time_buffer_.push_back(msg_time);
+  time_buffer_.push_back(msg_time.seconds());
 
   sig_buffer_.notify_all();
 }
@@ -413,22 +431,20 @@ void SPARKFastLIO2::livoxLiDARCallback(
 void SPARKFastLIO2::imuCallback(const sensor_msgs::msg::Imu::ConstSharedPtr msg) {
   ++publish_count_;
 
-  double stamp = rclcpp::Time(msg->header.stamp).seconds();
+  rclcpp::Time stamp = msg->header.stamp;
   std::lock_guard<std::mutex> lk(buffer_mutex_);
 
-  auto imu_input = [&]() {
-    auto copy_msg = std::make_shared<sensor_msgs::msg::Imu>(*msg);
-    if (time_sync_en_ && std::fabs(timediff_lidar_wrt_imu_) > 0.1) {
-      double corrected_stamp = stamp + timediff_lidar_wrt_imu_;
-      copy_msg->header.stamp = rclcpp::Time(corrected_stamp * 1e9);
-      return copy_msg;
-    } else {
-      return copy_msg;
-    }
-  }();
+  auto imu_input = std::make_shared<sensor_msgs::msg::Imu>(*msg);
+  if (time_sync_en_ && std::abs(timediff_lidar_wrt_imu_) > static_cast<int64_t>(1.0e8)) {
+    stamp += rclcpp::Duration::from_nanoseconds(timediff_lidar_wrt_imu_);
+    imu_input->header.stamp = stamp;
+  }
 
   if (stamp < last_imu_timestamp_) {
-    RCLCPP_WARN(get_logger(), "IMU loopback, clearing buffers");
+    RCLCPP_WARN_STREAM(get_logger(),
+                       "IMU loopback, clearing buffers (previous: "
+                           << last_imu_timestamp_.nanoseconds()
+                           << " vs. received: " << stamp.nanoseconds() << " [ns]");
     imu_buffer_.clear();
     kf_for_preintegration_.reset();
   }
@@ -942,14 +958,14 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose) {
     lidar_pushed_       = true;
   }
 
-  if (last_imu_timestamp_ < lidar_end_time_) {
+  if (last_imu_timestamp_.seconds() < lidar_end_time_) {
     if (verbose) {
-      static double last_imu_timestamp_prev = 0;
+      static rclcpp::Time last_imu_timestamp_prev;
       // To only print out when changes occur
       if (last_imu_timestamp_prev != last_imu_timestamp_) {
         RCLCPP_INFO(this->get_logger(),
                     "Not enough IMU data (%.6f < %.6f)",
-                    last_imu_timestamp_,
+                    last_imu_timestamp_.seconds(),
                     lidar_end_time_);
         last_imu_timestamp_prev = last_imu_timestamp_;
       }
@@ -974,7 +990,8 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose) {
   return true;
 }
 
-bool SPARKFastLIO2::isMotionStopped(const V3D &acc_ref, const V3D &acc_curr,
+bool SPARKFastLIO2::isMotionStopped(const V3D &acc_ref,
+                                    const V3D &acc_curr,
                                     const double acc_diff_thr) {
   return (acc_ref - acc_curr).norm() <= acc_diff_thr;
 }
