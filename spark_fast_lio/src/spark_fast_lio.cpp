@@ -85,21 +85,23 @@ SPARKFastLIO2::SPARKFastLIO2(const rclcpp::NodeOptions &options)
   auto g_vec = declare_parameter<std::vector<double>>("gravity_alignment.g_base", {0.0, 0.0, -1.0});
   g_base_ << g_vec[0], g_vec[1], g_vec[2];
 
-  auto sensor_qos = rclcpp::SensorDataQoS();
+  rclcpp::QoS lidar_qos(rclcpp::KeepLast(10));
+  lidar_qos.reliable();
+  lidar_qos.durability_volatile();
   sub_lidar_      = create_subscription<sensor_msgs::msg::PointCloud2>(
       "lidar",
-      sensor_qos,
+      lidar_qos,
       std::bind(&SPARKFastLIO2::standardLiDARCallback, this, std::placeholders::_1));
 
 #if defined(LIVOX_ROS_DRIVER_FOUND) && LIVOX_ROS_DRIVER_FOUND
   sub_lidar_livox_ = create_subscription<livox_ros_driver2::msg::CustomMsg>(
       "lidar",
-      sensor_qos,
+      lidar_qos,
       std::bind(&SPARKFastLIO2::livoxLidarCallback, this, std::placeholders::_1));
 #endif
-
+  auto imu_qos = rclcpp::SensorDataQoS();
   sub_imu_ = create_subscription<sensor_msgs::msg::Imu>(
-      "imu", sensor_qos, std::bind(&SPARKFastLIO2::imuCallback, this, std::placeholders::_1));
+      "imu", imu_qos, std::bind(&SPARKFastLIO2::imuCallback, this, std::placeholders::_1));
 
   rclcpp::QoS qos((rclcpp::SystemDefaultsQoS().keep_last(1).durability_volatile()));
   pub_cloud_full_  = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered", qos);
