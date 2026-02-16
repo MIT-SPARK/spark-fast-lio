@@ -962,7 +962,7 @@ bool SPARKFastLIO2::syncPackages(MeasureGroup &meas, bool verbose) {
 
   if (last_imu_timestamp_.seconds() < lidar_end_time_) {
     if (verbose) {
-      static rclcpp::Time last_imu_timestamp_prev;
+      static rclcpp::Time last_imu_timestamp_prev(now());
       // To only print out when changes occur
       if (last_imu_timestamp_prev != last_imu_timestamp_) {
         RCLCPP_INFO(this->get_logger(),
