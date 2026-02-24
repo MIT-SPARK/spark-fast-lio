@@ -1,4 +1,4 @@
-/rrghusky/lio_mapping:
+/**:
   ros__parameters:
     preprocess:
       lidar_type: 2               # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR,
@@ -37,7 +37,7 @@
       interval: -1                 # how many LiDAR frames saved in each pcd file;
       # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
 
-    verbose: true
+    verbose: false
     point_filter_num_for_preprocessing: 1 # If it is set to `1`, full point cloud gonna be publlished
     point_filter_num: 4                   # For pose estimation.
     max_iteration: 4
